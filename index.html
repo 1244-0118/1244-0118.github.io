@@ -1607,6 +1607,9 @@
     const SCENE_BACKGROUND = 0x03040a;
     const CAMERA_FOV = 50;
     const CAMERA_Z = 8.5;
+    const MOBILE_PARTICLE_FIT_RADIUS = 4.6;
+    const MOBILE_OPEN_SCALE = 1.3;
+    const TEXT_OPEN_SCALE = 1.18;
     const FOG_DENSITY = 0.012;
     const PARTICLE_COUNT_DESKTOP = 15000;
     const PARTICLE_COUNT_MOBILE = 6000;
@@ -1882,59 +1885,130 @@
       return positions;
     }
 
+    function splitTextIntoBalancedLines(text) {
+      const characters = Array.from(text);
+
+      if (characters.length < 4) return [text];
+
+      const midpoint = Math.ceil(characters.length / 2);
+      const punctuation = /[，。！？、；：,.!?;:]/;
+      let splitIndex = midpoint;
+
+      for (let offset = 0; offset <= 6; offset += 1) {
+        const candidates =
+          offset === 0
+            ? [midpoint]
+            : [midpoint - offset, midpoint + offset];
+
+        const foundIndex = candidates.find((candidate) => {
+          if (candidate <= 1 || candidate >= characters.length - 1) {
+            return false;
+          }
+
+          return (
+            punctuation.test(characters[candidate - 1]) ||
+            /\s/.test(characters[candidate])
+          );
+        });
+
+        if (foundIndex !== undefined) {
+          splitIndex = foundIndex;
+          break;
+        }
+      }
+
+      const firstLine = characters.slice(0, splitIndex).join("").trim();
+      const secondLine = characters.slice(splitIndex).join("").trim();
+
+      if (!firstLine || !secondLine) return [text];
+      return [firstLine, secondLine];
+    }
+
     function createTextPositions(count, rawText) {
       const positions = new Float32Array(count * 3);
       const random = createSeededRandom(0x74657874);
       const canvas = document.createElement("canvas");
-      const canvasWidth = 1024;
-      const canvasHeight = 256;
+      const canvasWidth = 2048;
+      const canvasHeight = 768;
       canvas.width = canvasWidth;
       canvas.height = canvasHeight;
 
       const context = canvas.getContext("2d", { willReadFrequently: true });
       const text = String(rawText || "").trim().slice(0, 24) || "HELLO";
-      let fontSize = 178;
+      const maxTextWidth = canvasWidth * 0.9;
+      const maxFontSize = 270;
+      const fontFamily = '"Microsoft YaHei", "PingFang SC", sans-serif';
 
       context.clearRect(0, 0, canvasWidth, canvasHeight);
       context.fillStyle = "#ffffff";
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.font = `900 ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+      context.font = `900 ${maxFontSize}px ${fontFamily}`;
 
-      const measuredWidth = context.measureText(text).width;
-      if (measuredWidth > 920) {
-        fontSize = Math.max(54, Math.floor(fontSize * 920 / measuredWidth));
-        context.font = `900 ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+      let lines = [text];
+      if (context.measureText(text).width > maxTextWidth) {
+        lines = splitTextIntoBalancedLines(text);
       }
 
-      context.fillText(text, canvasWidth / 2, canvasHeight / 2);
+      const widestLine = Math.max(
+        ...lines.map((line) => context.measureText(line).width)
+      );
+      const widthLimitedSize = maxFontSize * maxTextWidth / widestLine;
+      const heightLimitedSize =
+        canvasHeight * 0.76 / (lines.length * 1.16);
+      const fontSize = Math.floor(
+        Math.min(maxFontSize, widthLimitedSize, heightLimitedSize)
+      );
+      const lineHeight = fontSize * 1.16;
+      const firstLineY =
+        canvasHeight / 2 - (lines.length - 1) * lineHeight / 2;
+
+      context.font = `900 ${fontSize}px ${fontFamily}`;
+      lines.forEach((line, lineIndex) => {
+        context.fillText(
+          line,
+          canvasWidth / 2,
+          firstLineY + lineIndex * lineHeight
+        );
+      });
 
       const imageData = context.getImageData(0, 0, canvasWidth, canvasHeight);
       const pixels = [];
 
-      for (let y = 0; y < canvasHeight; y += 2) {
-        for (let x = 0; x < canvasWidth; x += 2) {
+      for (let y = 0; y < canvasHeight; y += 1) {
+        for (let x = 0; x < canvasWidth; x += 1) {
           const alphaIndex = (y * canvasWidth + x) * 4 + 3;
-          if (imageData.data[alphaIndex] > 128) {
+          if (imageData.data[alphaIndex] > 112) {
             pixels.push(x, y);
           }
         }
       }
 
-      const fallbackPixels = pixels.length > 0 ? pixels : [canvasWidth / 2, canvasHeight / 2];
-      const sampleCount = fallbackPixels.length / 2;
+      const pixelCount = pixels.length > 0 ? pixels.length / 2 : 1;
+      const sampleOffset = Math.floor(random() * pixelCount);
+      const worldWidth = 6.4;
+      const worldHeight = 2.38;
 
       for (let index = 0; index < count; index += 1) {
         const arrayIndex = index * 3;
-        const sampleOffset = Math.floor(random() * sampleCount) * 2;
-        const x = fallbackPixels[sampleOffset];
-        const y = fallbackPixels[sampleOffset + 1];
+        const pixelIndex =
+          pixels.length > 0
+            ? pixelCount >= count
+              ? (sampleOffset + Math.floor(index * pixelCount / count)) %
+                pixelCount
+              : index % pixelCount
+            : 0;
+        const x = pixels.length > 0 ? pixels[pixelIndex * 2] : canvasWidth / 2;
+        const y = pixels.length > 0 ? pixels[pixelIndex * 2 + 1] : canvasHeight / 2;
 
+        // 采样点覆盖均匀，仅保留亚像素级抖动，避免文字边缘结块。
         positions[arrayIndex] =
-          (x / canvasWidth - 0.5) * 6.35 + (random() - 0.5) * 0.026;
+          (x / canvasWidth - 0.5) * worldWidth +
+          (random() - 0.5) * 0.004;
         positions[arrayIndex + 1] =
-          -(y / canvasHeight - 0.5) * 1.59 + (random() - 0.5) * 0.026;
-        positions[arrayIndex + 2] = (random() - 0.5) * 0.2;
+          -(y / canvasHeight - 0.5) * worldHeight +
+          (random() - 0.5) * 0.004;
+        positions[arrayIndex + 2] = (random() - 0.5) * 0.06;
       }
 
       return positions;
@@ -2120,6 +2194,9 @@
       let resizeFrameId = 0;
       let currentGestureScale = 1;
       let targetGestureScale = 1;
+      let particleViewSizeScale = 1;
+      let particleShapeSizeScale = 1;
+      let activeGestureName = "none";
       let controlPanelVisible = window.innerWidth > 768;
       let motionSpeed = 1;
       let explosionActive = false;
@@ -2156,10 +2233,33 @@
         return shapeCache[shape] || shapeCache.nebula;
       }
 
+      function updateParticleShapeVisuals(shape) {
+        if (shape === "text") {
+          particleShapeSizeScale = Math.min(
+            0.82,
+            Math.max(0.58, Math.sqrt(10000 / particleCount))
+          );
+          particleSystem.material.opacity = 0.82;
+        } else {
+          particleShapeSizeScale = 1;
+          particleSystem.material.opacity = 0.88;
+        }
+      }
+
       function applyShapeTarget(shape) {
         if (!["nebula", "heart", "dna", "text"].includes(shape)) return;
         activeShape = shape;
         particleTargetPositions = getShapeTargetPositions(shape);
+        updateParticleShapeVisuals(shape);
+
+        if (activeGestureName === "open") {
+          targetGestureScale =
+            shape === "text"
+              ? TEXT_OPEN_SCALE
+              : isMobileScene
+                ? MOBILE_OPEN_SCALE
+                : 1.55;
+        }
       }
 
       function updateParticlePositions(delta) {
@@ -2256,11 +2356,11 @@
 
             targetX +=
               Math.sin(targetY * 3 + flowTime * 0.6 + phase) * 0.008;
-            targetY += primaryWave * 0.035 + secondaryWave * 0.012;
+            targetY += primaryWave * 0.025 + secondaryWave * 0.008;
             targetZ +=
               Math.sin(
                 targetX * 1.9 + flowTime * 0.8 + phase * Math.PI * 2
-              ) * 0.03;
+              ) * 0.018;
           }
 
           positions[index] += (targetX - positions[index]) * interpolation;
@@ -2346,6 +2446,7 @@
         particleSystem = createNebulaParticleSystem(particleCount);
         particleRoot.add(particleSystem.points);
         runtime.particleSystem = particleSystem;
+        updateParticleShapeVisuals(activeShape);
 
         shapeCache.nebula = new Float32Array(particleSystem.currentPositions);
         shapeCache.heart = null;
@@ -2527,9 +2628,15 @@
 
       window.addEventListener("gesture-nebula:gesture", (event) => {
         const gesture = event.detail && event.detail.gesture;
+        activeGestureName = gesture || "none";
 
         if (gesture === "open") {
-          targetGestureScale = 1.55;
+          targetGestureScale =
+            activeShape === "text"
+              ? TEXT_OPEN_SCALE
+              : isMobileScene
+                ? MOBILE_OPEN_SCALE
+                : 1.55;
         } else if (gesture === "fist") {
           targetGestureScale = 0.45;
         } else {
@@ -2547,7 +2654,7 @@
       function updateParticlePlacement() {
         const halfViewWidth =
           Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2)) *
-          CAMERA_Z *
+          camera.position.z *
           camera.aspect;
 
         particleRoot.position.x =
@@ -2569,6 +2676,24 @@
         renderer.setSize(width, height, false);
 
         camera.aspect = width / height;
+
+        if (isMobileScene) {
+          const limitingHalfAngle =
+            Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2)) *
+            Math.max(0.2, Math.min(1, camera.aspect));
+          camera.position.z = Math.max(
+            CAMERA_Z,
+            MOBILE_PARTICLE_FIT_RADIUS / limitingHalfAngle
+          );
+          particleViewSizeScale = Math.min(
+            1.55,
+            Math.max(1, (camera.position.z / CAMERA_Z) * 0.8)
+          );
+        } else {
+          camera.position.z = CAMERA_Z;
+          particleViewSizeScale = 1;
+        }
+
         camera.updateProjectionMatrix();
 
         // 面板展开时略向右偏移；面板收起后以完整屏幕中心为准。
@@ -2615,7 +2740,10 @@
 
         particleRoot.scale.setScalar(explosionScale);
         particleSystem.material.size =
-          particleSystem.baseSize * (1 + explosionEnergy * 0.72);
+          particleSystem.baseSize *
+          particleViewSizeScale *
+          particleShapeSizeScale *
+          (1 + explosionEnergy * 0.72);
 
         updateFps(rawDelta);
         renderer.render(scene, camera);
